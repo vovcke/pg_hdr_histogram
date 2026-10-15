@@ -1,0 +1,6 @@
+# hdr_histogram extension
+comment = 'Exact-latency percentiles via HDR histograms (lossless merge), by Vladimir Pavliv'
+default_version = '1.0'
+module_pathname = '$libdir/hdr_histogram'
+relocatable = true
+trusted = true

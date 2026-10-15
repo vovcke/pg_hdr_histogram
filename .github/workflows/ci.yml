@@ -1,0 +1,49 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        pg: [14, 15, 16, 17, 18]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Add PostgreSQL APT repository
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y curl ca-certificates gnupg lsb-release
+          curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+            | sudo gpg --dearmor -o /usr/share/keyrings/postgresql.gpg
+          echo "deb [signed-by=/usr/share/keyrings/postgresql.gpg] http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
+            | sudo tee /etc/apt/sources.list.d/pgdg.list
+          sudo apt-get update
+
+      - name: Install PostgreSQL ${{ matrix.pg }}
+        run: |
+          sudo apt-get install -y \
+            postgresql-${{ matrix.pg }} \
+            postgresql-server-dev-${{ matrix.pg }} \
+            build-essential \
+            zlib1g-dev
+
+      - name: Build
+        run: make
+        env:
+          PG_CONFIG: /usr/lib/postgresql/${{ matrix.pg }}/bin/pg_config
+
+      - name: Install and test
+        run: |
+          sudo env "PG_CONFIG=/usr/lib/postgresql/${{ matrix.pg }}/bin/pg_config" make install
+          sudo pg_ctlcluster ${{ matrix.pg }} main restart
+          sudo -u postgres createuser -s "$(whoami)"
+          make installcheck
+        env:
+          PG_CONFIG: /usr/lib/postgresql/${{ matrix.pg }}/bin/pg_config

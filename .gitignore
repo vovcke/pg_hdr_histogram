@@ -1,0 +1,17 @@
+# Build artifacts
+*.o
+*.so
+*.bc
+*.dylib
+*.a
+
+# PGXS regression output
+results/
+regression.diffs
+regression.out
+tmp_check/
+tmp_check_iso/
+
+# Editor / OS
+*~
+.DS_Store

@@ -1,0 +1,80 @@
+CREATE EXTENSION hdr_histogram;
+-- A known dataset spanning several orders of magnitude.
+CREATE TABLE vals (v double precision);
+INSERT INTO vals VALUES
+    (1), (2), (3), (5), (10), (20), (50),
+    (100), (200), (500), (1000), (2000), (5000),
+    (10000), (20000), (50000), (100000), (1000000), (100000000);
+-- Default histogram parameters used by hdr_add(value).
+SELECT hdr_sig_figs(h) AS sig_figs,
+       hdr_lowest(h)   AS lowest,
+       hdr_highest(h)  AS highest
+FROM (SELECT hdr_add(v) AS h FROM vals) s;
+ sig_figs | lowest |  highest   
+----------+--------+------------
+        3 |      1 | 1000000000
+(1 row)
+
+-- Summary statistics over the whole dataset.
+SELECT hdr_total_count(h) AS count,
+       hdr_min(h)         AS min,
+       hdr_max(h)         AS max,
+       hdr_mean(h)        AS mean,
+       hdr_stddev(h)      AS stddev
+FROM (SELECT hdr_add(v) AS h FROM vals) s;
+ count | min |    max    |  mean   |       stddev       
+-------+-----+-----------+---------+--------------------
+    19 |   1 | 100007935 | 5324435 | 22310494.436561435
+(1 row)
+
+-- Exact percentiles.
+SELECT hdr_percentile(h, 0)   AS p0,
+       hdr_percentile(h, 25)  AS p25,
+       hdr_percentile(h, 50)  AS p50,
+       hdr_percentile(h, 90)  AS p90,
+       hdr_percentile(h, 99)  AS p99,
+       hdr_percentile(h, 100) AS p100
+FROM (SELECT hdr_add(v) AS h FROM vals) s;
+ p0 | p25 | p50 |  p90   |    p99    |   p100    
+----+-----+-----+--------+-----------+-----------
+  1 |  10 | 500 | 100031 | 100007935 | 100007935
+(1 row)
+
+-- NULLs are skipped by the aggregate.
+SELECT hdr_total_count(hdr_add(v)) AS count
+FROM (VALUES (1.0::float8), (NULL::float8), (2.0::float8), (3.0::float8)) AS t(v);
+ count 
+-------
+     3
+(1 row)
+
+-- An aggregate over zero rows is NULL.
+SELECT (SELECT hdr_add(v) FROM (SELECT 1.0::float8 AS v WHERE false) s) IS NULL
+    AS empty_is_null;
+ empty_is_null 
+---------------
+ t
+(1 row)
+
+-- hdr_merge: lossless merge of pre-built histograms.
+CREATE TABLE hist (grp int, h hdr_histogram);
+INSERT INTO hist SELECT 1, hdr_add(v) FROM vals WHERE v <= 1000;
+INSERT INTO hist SELECT 1, hdr_add(v) FROM vals WHERE v > 1000;
+SELECT hdr_total_count(hdr_merge(h))    AS count,
+       hdr_min(hdr_merge(h))            AS min,
+       hdr_max(hdr_merge(h))            AS max,
+       hdr_percentile(hdr_merge(h), 50) AS p50
+FROM hist;
+ count | min |    max    | p50 
+-------+-----+-----------+-----
+    19 |   1 | 100007935 | 500
+(1 row)
+
+-- Text round-trip via the type's I/O functions.
+SELECT hdr_total_count((hdr_histogram_out(h)::text)::hdr_histogram) AS rt_count
+FROM (SELECT hdr_add(v) AS h FROM vals) s;
+ rt_count 
+----------
+       19
+(1 row)
+

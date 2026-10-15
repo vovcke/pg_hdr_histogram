@@ -78,3 +78,10 @@ FROM (SELECT hdr_add(v) AS h FROM vals) s;
        19
 (1 row)
 
+-- Out-of-range and non-finite values are rejected.
+SELECT hdr_total_count(hdr_add(-1.0::float8));
+ERROR:  hdr_add: value must be non-negative
+SELECT hdr_total_count(hdr_add(1e10::float8));
+ERROR:  hdr_add: value exceeds the maximum supported value (1000000000)
+SELECT hdr_total_count(hdr_add('NaN'::float8));
+ERROR:  hdr_add: value must be finite

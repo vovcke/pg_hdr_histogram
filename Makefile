@@ -17,7 +17,8 @@ OBJS = hdr_histogram.o \
 
 # <hdr/hdr_histogram.h> lives under include/; the .c files pull their sibling
 # headers ("hdr_*.h") relative to src/.
-PG_CPPFLAGS = -Ithird_party/HdrHistogram_c/include -Ithird_party/HdrHistogram_c/src
+PG_CPPFLAGS = -Ithird_party/HdrHistogram_c/include -Ithird_party/HdrHistogram_c/src \
+              -DHDR_MALLOC_INCLUDE='"pghdr_alloc.h"'
 
 # HdrHistogram_c uses zlib for hdr_encode_compressed.
 SHLIB_LINK = -lz

@@ -44,8 +44,9 @@ FROM requests;
 ```
 
 `hdr_add(double precision)` records each value (converted to `int64`, so pass
-latency in a common unit like ns) into a histogram. Default range is `1 .. 1e9`
-with 3 significant figures (~0.1% precision).
+latency in a common unit like ns) into a histogram. Default range is `0 .. 1e9`
+with 3 significant figures (~0.1% precision). Values outside that range, or
+non-finite values (`NaN`, `±Inf`), raise an error.
 
 ### Mode B — merge already-stored histograms (the nanolens flow)
 
@@ -91,8 +92,9 @@ losslessly into whatever window you want.
   merge partial histograms losslessly.
 - **`trusted = true`** in the control file: installable by non-superusers, which
   managed providers require.
-- Trade-off: `HdrHistogram_c` allocates with `malloc`, so a mid-query error
-  leaks the in-flight states (bounded by the query). Acceptable for now.
+- Memory: `HdrHistogram_c`'s allocator is redirected to `palloc`/`pfree`, so
+  all histogram memory lives in PostgreSQL memory contexts and is reclaimed
+  automatically - including on mid-query errors.
 
 ## Roadmap
 

@@ -52,3 +52,8 @@ FROM hist;
 -- Text round-trip via the type's I/O functions.
 SELECT hdr_total_count((hdr_histogram_out(h)::text)::hdr_histogram) AS rt_count
 FROM (SELECT hdr_add(v) AS h FROM vals) s;
+
+-- Out-of-range and non-finite values are rejected.
+SELECT hdr_total_count(hdr_add(-1.0::float8));
+SELECT hdr_total_count(hdr_add(1e10::float8));
+SELECT hdr_total_count(hdr_add('NaN'::float8));

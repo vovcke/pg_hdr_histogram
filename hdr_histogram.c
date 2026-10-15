@@ -18,10 +18,13 @@
 #include "libpq/pqformat.h"
 #include "varatt.h"
 
+#include <math.h>
 #include <stdint.h>
 #include <string.h>
 
 #include <hdr/hdr_histogram.h>
+
+#include "pghdr_alloc.h"
 
 PG_MODULE_MAGIC;
 
@@ -45,6 +48,42 @@ int hdr_decode_compressed(uint8_t *buffer, size_t length, struct hdr_histogram *
 
 /* The type is a varlena: [4-byte length][compressed HDR blob]. */
 typedef struct varlena hdr_histogram;
+
+/* ---------------------------------------------------------------------------
+ * Allocator bridge: HdrHistogram_c's hdr_malloc/hdr_calloc/hdr_realloc/
+ * hdr_free are redirected (via pghdr_alloc.h) to these, which in turn use
+ * palloc/palloc0/repalloc/pfree.  All histogram memory therefore lives in
+ * PostgreSQL memory contexts and is reclaimed automatically - including on
+ * mid-query errors, which previously leaked.
+ * ------------------------------------------------------------------------ */
+
+void *
+pghdr_alloc(size_t size)
+{
+    return palloc(size);
+}
+
+void *
+pghdr_calloc(size_t count, size_t size)
+{
+    if (count != 0 && size > (size_t) -1 / count)
+        ereport(ERROR,
+                (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+                 errmsg("hdr_histogram: allocation size overflow")));
+    return palloc0(count * size);
+}
+
+void *
+pghdr_realloc(void *ptr, size_t size)
+{
+    return repalloc(ptr, size);
+}
+
+void
+pghdr_free(void *ptr)
+{
+    pfree(ptr);
+}
 
 /* ---------------------------------------------------------------------------
  * Hex codec (self-contained, so we don't depend on the exact header that
@@ -196,7 +235,7 @@ encode_histogram(struct hdr_histogram *h)
     result = (hdr_histogram *) palloc(VARHDRSZ + encoded_len);
     SET_VARSIZE(result, VARHDRSZ + encoded_len);
     memcpy(VARDATA(result), encoded, encoded_len);
-    free(encoded);
+    pfree(encoded);
 
     return result;
 }
@@ -317,11 +356,26 @@ hdr_highest(PG_FUNCTION_ARGS)
  * ------------------------------------------------------------------------ */
 
 static struct hdr_histogram *
-agg_init_state(void)
+agg_init_state(FunctionCallInfo fcinfo)
 {
     struct hdr_histogram *h = NULL;
-    int         rc = hdr_init(HDR_DEFAULT_LOWEST, HDR_DEFAULT_HIGHEST,
-                              HDR_DEFAULT_SIGFIGS, &h);
+    MemoryContext aggcontext;
+    MemoryContext oldcontext;
+    int         rc;
+
+    /*
+     * The transition state must live in the aggregate context, not the
+     * per-tuple context the transition function is invoked in; otherwise it
+     * is reset after the first row.  (This matters now that HdrHistogram_c's
+     * allocator is palloc rather than malloc.)
+     */
+    if (AggCheckCallContext(fcinfo, &aggcontext) != AGG_CONTEXT_AGGREGATE)
+        elog(ERROR, "hdr_histogram: aggregate function called in non-aggregate context");
+
+    oldcontext = MemoryContextSwitchTo(aggcontext);
+    rc = hdr_init(HDR_DEFAULT_LOWEST, HDR_DEFAULT_HIGHEST,
+                  HDR_DEFAULT_SIGFIGS, &h);
+    MemoryContextSwitchTo(oldcontext);
 
     if (rc != 0)
         elog(ERROR, "hdr_histogram: hdr_init failed");
@@ -360,11 +414,29 @@ hdr_add_transition(PG_FUNCTION_ARGS)
         PG_RETURN_DATUM(PG_GETARG_DATUM(0));    /* skip NULLs */
 
     if (PG_ARGISNULL(0))
-        state = agg_init_state();
+        state = agg_init_state(fcinfo);
     else
         state = (struct hdr_histogram *) PG_GETARG_POINTER(0);
 
     value = PG_GETARG_FLOAT8(1);
+
+    /* Reject inputs that HdrHistogram_c would otherwise silently drop. */
+    if (isnan(value) || isinf(value))
+        ereport(ERROR,
+                (errcode(ERRCODE_NUMERIC_VALUE_OUT_OF_RANGE),
+                 errmsg("hdr_add: value must be finite")));
+
+    if (value < 0.0)
+        ereport(ERROR,
+                (errcode(ERRCODE_NUMERIC_VALUE_OUT_OF_RANGE),
+                 errmsg("hdr_add: value must be non-negative")));
+
+    if (value > (double) state->highest_trackable_value)
+        ereport(ERROR,
+                (errcode(ERRCODE_NUMERIC_VALUE_OUT_OF_RANGE),
+                 errmsg("hdr_add: value exceeds the maximum supported value (%lld)",
+                        (long long) state->highest_trackable_value)));
+
     hdr_record_value(state, (int64_t) value);
 
     PG_RETURN_POINTER(state);
@@ -384,7 +456,7 @@ hdr_merge_transition(PG_FUNCTION_ARGS)
         PG_RETURN_DATUM(PG_GETARG_DATUM(0));    /* skip NULLs */
 
     if (PG_ARGISNULL(0))
-        state = agg_init_state();
+        state = agg_init_state(fcinfo);
     else
         state = (struct hdr_histogram *) PG_GETARG_POINTER(0);
 
@@ -401,8 +473,19 @@ PG_FUNCTION_INFO_V1(hdr_merge_combine);
 Datum
 hdr_merge_combine(PG_FUNCTION_ARGS)
 {
-    struct hdr_histogram *a = (struct hdr_histogram *) PG_GETARG_POINTER(0);
-    struct hdr_histogram *b = (struct hdr_histogram *) PG_GETARG_POINTER(1);
+    struct hdr_histogram *a;
+    struct hdr_histogram *b;
+
+    /*
+     * The first partial state for a group arrives with a NULL accumulator:
+     * it simply becomes the accumulator.  (The deserialized state already
+     * lives in the aggregate memory context.)
+     */
+    if (PG_ARGISNULL(0))
+        PG_RETURN_POINTER(PG_GETARG_POINTER(1));
+
+    a = (struct hdr_histogram *) PG_GETARG_POINTER(0);
+    b = (struct hdr_histogram *) PG_GETARG_POINTER(1);
 
     hdr_add(a, b);
     hdr_close(b);
@@ -427,8 +510,20 @@ hdr_agg_deserialize(PG_FUNCTION_ARGS)
 {
     bytea      *v = PG_GETARG_BYTEA_P(0);
     struct hdr_histogram *state;
+    MemoryContext aggcontext;
+    MemoryContext oldcontext;
 
+    /*
+     * The deserialized state must be allocated in the aggregate context, not
+     * the per-tuple context the deserialization function is invoked in;
+     * otherwise it is reset before the combine function runs.
+     */
+    if (AggCheckCallContext(fcinfo, &aggcontext) != AGG_CONTEXT_AGGREGATE)
+        elog(ERROR, "hdr_histogram: aggregate function called in non-aggregate context");
+
+    oldcontext = MemoryContextSwitchTo(aggcontext);
     state = decode_histogram((hdr_histogram *) v);
+    MemoryContextSwitchTo(oldcontext);
 
     PG_RETURN_POINTER(state);
 }

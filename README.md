@@ -70,6 +70,55 @@ WHERE metric_name = 'rps' AND ts BETWEEN '14:30' AND '14:35';
 Any period is just a merge over a time range — per-frame histograms merge
 losslessly into whatever window you want.
 
+### Merge policy
+
+When `hdr_merge` combines histograms with **different parameters** (range or
+precision), the `hdr_histogram.merge_mode` GUC decides what happens:
+
+| Mode | Behaviour |
+|------|-----------|
+| `lossless` (default) | merge only when it can be done without loss; otherwise error |
+| `strict` | require the parameters to match exactly; otherwise error |
+| `left` | keep the accumulator's parameters and silently drop values that don't fit |
+| `union` | rebuild into the widest range / finest precision, so nothing is ever dropped |
+
+```sql
+SET hdr_histogram.merge_mode = 'union';
+
+SELECT hdr_percentile(hdr_merge(hist), 99.9)
+FROM rps_histograms
+WHERE metric_name = 'rps' AND ts BETWEEN '14:30' AND '14:35';
+```
+
+The setting is per-session. Scope it to a transaction with `SET LOCAL`, or set a
+default per database / role:
+
+```sql
+SET LOCAL hdr_histogram.merge_mode = 'union';
+ALTER DATABASE mydb  SET hdr_histogram.merge_mode = 'union';
+ALTER ROLE  myuser SET hdr_histogram.merge_mode = 'union';
+```
+
+On managed providers without `ALTER DATABASE` access, pass it in the connection
+string:
+
+```
+options='-c hdr_histogram.merge_mode=union'
+```
+
+> The GUC is registered when the extension's shared library is loaded — on the
+> first call to any `hdr_*` function, or after `LOAD 'hdr_histogram'`.
+> `ALTER DATABASE`/`ALTER ROLE` settings are applied at session start, *before*
+> the library loads, so they would be silently ignored. To make database/role
+> defaults work, preload the library at session start:
+>
+> ```
+> # postgresql.conf
+> session_preload_libraries = 'hdr_histogram'
+> ```
+>
+> A plain `SET` mid-session needs no preloading.
+
 ### Scalar functions
 
 | Function | Returns |
@@ -96,11 +145,6 @@ losslessly into whatever window you want.
 - Memory: `HdrHistogram_c`'s allocator is redirected to `palloc`/`pfree`, so
   all histogram memory lives in PostgreSQL memory contexts and is reclaimed
   automatically - including on mid-query errors.
-- **Merge policy.** The `hdr_histogram.merge_mode` GUC controls what happens
-  when `hdr_merge` meets histograms with different parameters: `strict`
-  (error), `lossless` (default - merge only when lossless, else error), `left`
-  (keep the accumulator's parameters and drop non-fitting values), and `union`
-  (rebuild into the widest range / finest precision).
 
 ## Roadmap
 

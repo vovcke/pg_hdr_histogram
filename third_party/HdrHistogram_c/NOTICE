@@ -1,12 +1,14 @@
 # HdrHistogram_c (vendored)
 
 This directory contains a vendored copy of
-[HdrHistogram_c](https://github.com/HdrHistogram/HdrHistogram_c), the C port
-(by Michael Barker) of Gil Tene's HdrHistogram.
+[HdrHistogram_c](https://github.com/HdrHistogram/HdrHistogram_c), the C port of
+Gil Tene's [HdrHistogram](https://github.com/HdrHistogram/HdrHistogram).
 
-The code is released to the public domain:
+The code is released to the public domain (CC0).  Primary author is Michael
+Barker; other contributors include Marco Ippolito, Philip Orwig and Filipe
+Oliveira, as credited in the per-file headers:
 
     Written by Michael Barker and released to the public domain,
     as explained at http://creativecommons.org/publicdomain/zero/1.0/
 
-See the per-file headers under `include/` and `src/` for the original notices.
+See the per-file headers under `include/` and `src/` for the full notices.

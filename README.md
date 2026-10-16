@@ -1,22 +1,27 @@
-# hdr_histogram
+# pg_hdr_histogram
 
-A PostgreSQL extension for **bounded-error latency percentiles** using HDR histograms.
+A PostgreSQL extension for **bounded-error latency percentiles** using
+[HdrHistogram](https://github.com/HdrHistogram/HdrHistogram), the
+high-dynamic-range histogram library by Gil Tene.
 
-Stores a full HDR histogram (`HdrHistogram_c`) as a first-class type and gives
-you aggregates + scalar functions to build, merge and query **bounded-error**
-percentiles (p50 / p99 / p99.9 / …) with **lossless merge** — unlike
-Prometheus/Datadog, which approximate percentiles from fixed buckets.
+It stores a **serialized** HDR histogram — a compact compressed blob, not a live
+in-memory object — as a first-class type. On disk it's a few bytes; in SQL it
+behaves like a live histogram you can merge and query percentiles on.
 
 Author: Vladimir Pavliv.
 
-## Why
+Vendors [HdrHistogram_c](https://github.com/HdrHistogram/HdrHistogram_c), the C
+port of HdrHistogram by Michael Barker — see [Credits](#credits).
+
+## Why HDR histogram
 
 - **Bounded error, not fixed buckets.** HDR gives ~0.1% relative precision over
   6 orders of magnitude. `p99.9` is a measurement, not an interpolation between
   buckets.
-- **Lossless merge.** Histograms merge with `hdr_merge` — you can aggregate across
-  time windows, hosts, or pre-aggregated frames without losing the distribution.
-- **No lock-in.** Your data lives in ordinary Postgres, queryable with plain SQL.
+- **Lossless merge.** Histograms merge with `hdr_merge` — aggregate across time
+  windows, hosts, or pre-aggregated frames without losing the distribution.
+- **No lock-in.** Histograms are ordinary rows in a Postgres table, queryable
+  with plain SQL.
 
 ## Install
 
@@ -33,13 +38,16 @@ Then in psql:
 CREATE EXTENSION hdr_histogram;
 ```
 
+(The project is `pg_hdr_histogram`; the extension is installed as
+`hdr_histogram`.)
+
 ## Usage
 
-### Mode A — build a histogram from a column of raw values
+### Build a histogram from raw values
 
 ```sql
-SELECT hdr_percentile(hdr_add(latency_ns), 50)  AS p50,
-       hdr_percentile(hdr_add(latency_ns), 99)  AS p99,
+SELECT hdr_percentile(hdr_add(latency_ns), 50)   AS p50,
+       hdr_percentile(hdr_add(latency_ns), 99)   AS p99,
        hdr_percentile(hdr_add(latency_ns), 99.9) AS p999
 FROM requests;
 ```
@@ -49,11 +57,13 @@ latency in a common unit like ns) into a histogram. Default range is `0 .. 1e9`
 with 3 significant figures (~0.1% precision). Values outside that range, or
 non-finite values (`NaN`, `±Inf`), raise an error.
 
-### Mode B — merge already-stored histograms (the nanolens flow)
+### Store & merge serialized histograms
+
+The `hdr_histogram` type holds a serialized HDR blob, so anything that produces
+an HdrHistogram — your application code, a telemetry agent, another HdrHistogram
+port — can write one straight into a column. No Postgres-specific format:
 
 ```sql
--- nanolens writes one compressed HDR histogram per frame (16 ms); store it in a
--- column of type hdr_histogram, with metadata in ordinary columns:
 CREATE TABLE rps_histograms (
     metric_name text,
     ts          timestamptz,
@@ -130,6 +140,34 @@ options='-c hdr_histogram.merge_mode=union'
 | `hdr_total_count(h)` | number of recorded values |
 | `hdr_sig_figs(h)` / `hdr_lowest(h)` / `hdr_highest(h)` | histogram parameters |
 
+## Size & performance
+
+Measured on a dev machine (PostgreSQL 18, single backend) — treat as ballpark,
+your numbers will vary. Reproduce with:
+
+```bash
+createdb bench
+psql bench -c 'CREATE EXTENSION hdr_histogram;'
+psql bench -f bench/benchmark.sql
+```
+
+**A histogram is small, and its size depends on the *spread* of values, not on
+how many there are** — the blob stores bucket counts, not the values:
+
+| Data | Compressed blob size |
+|------|----------------------|
+| 1 value | ~42 B |
+| 10 M values in a tight cluster | ~48 B |
+| values spanning the full `1..1e9` range | ~3.5 KB |
+
+**Throughput:**
+
+- `hdr_add` (build a histogram from raw values): ~9 M values/s.
+- `hdr_merge` (merge stored histograms), per tiny histogram:
+  - single-threaded: ~90 µs (~11 k/s);
+  - parallel (2 workers + leader): ~28 µs (~35 k/s) — roughly **3× faster**.
+  The cost scales with blob size — each merge decompresses and recompresses.
+
 ## Design notes
 
 - **Type** `hdr_histogram` is a varlena holding the compressed HDR blob
@@ -146,9 +184,31 @@ options='-c hdr_histogram.merge_mode=union'
   all histogram memory lives in PostgreSQL memory contexts and is reclaimed
   automatically - including on mid-query errors.
 
-## Roadmap
+## Related work
 
-- Configurable histogram parameters per `hdr_add` (lowest/highest/sig-figs).
-- A `hdr_percentile_agg(value, p)` aggregate that returns the percentile directly
-  (avoids materializing the histogram when you only need one number).
-- OTel Exponential Histogram import/export.
+Percentiles from mergeable sketches are a well-trodden problem; other PostgreSQL
+extensions solve it with different algorithms:
+
+- [`tdigest`](https://github.com/tvondra/tdigest) — t-digest. Accurate on skewed
+  distributions, but with no fixed relative-error guarantee, and merges are
+  approximate.
+- [`ddsketch`](https://github.com/tvondra/ddsketch) — DDSketch (Datadog's
+  sketch), a log-bucketed sketch with a relative-error guarantee. Conceptually
+  the closest to HDR, but a different format and API.
+- [`query_histogram`](https://github.com/tvondra/query_histogram) — histograms
+  of query *durations* for monitoring, not a general-purpose histogram type.
+
+`hdr_histogram` differs by storing a full HDR histogram as a first-class type,
+so histograms can be persisted, indexed and merged losslessly across time and
+hosts, rather than only estimated in memory.
+
+## Credits
+
+The histogram implementation is entirely
+[HdrHistogram_c](https://github.com/HdrHistogram/HdrHistogram_c) (vendored under
+`third_party/`, version 0.11.10) — the C port, primarily by Michael Barker, of
+Gil Tene's [HdrHistogram](https://github.com/HdrHistogram/HdrHistogram).  The
+algorithm and its implementation are their work; this extension is a thin
+adapter that packages it as a PostgreSQL type, aggregates and functions.  The
+library is public domain (CC0); see `third_party/HdrHistogram_c/NOTICE` and the
+per-file headers for the full author notices.

@@ -26,6 +26,7 @@
 #include <math.h>
 #include <stdint.h>
 #include <string.h>
+#include <zlib.h>
 
 #include <hdr/hdr_histogram.h>
 
@@ -91,6 +92,18 @@ int hdr_decode_compressed(uint8_t *buffer, size_t length, struct hdr_histogram *
  * input boundary (also bounds the work a crafted blob can make the zlib decode
  * do). */
 #define HDR_BLOB_MAX_SIZE   (1 * 1024 * 1024)
+
+/*
+ * The V2 compression cookie (HdrHistogram_c) with the word-size bits masked
+ * off.  We produce/import only V2; V0/V1 are legacy and rejected.
+ */
+#define HDR_V2_COMPRESSION_COOKIE   0x1c849304u
+
+/* The encoding header carries an uncompressed counts length (payload_len) that
+ * the decoder allocates directly.  A legit 5-sig-fig histogram over the widest
+ * allowed range is ~6 MB; 16 MB is a generous cap that blocks crafted blobs
+ * from demanding gigabytes. */
+#define HDR_BLOB_MAX_COUNTS         (16 * 1024 * 1024)
 
 /* The type is a varlena: [4-byte length][compressed HDR blob]. */
 typedef struct varlena hdr_histogram;
@@ -204,22 +217,78 @@ bytes_to_hex(const char *src, size_t len)
  * ------------------------------------------------------------------------ */
 
 /*
- * Validate that a serialized histogram blob decodes.  The input functions use
- * this so a malformed/truncated/crafted blob is rejected with the right
- * SQLSTATE at input time, rather than surfacing as a corrupt value later.
+ * Read a big-endian uint32 from a byte buffer (the HDR blob is big-endian on
+ * the wire).
+ */
+static uint32_t
+read_be32(const uint8_t *p)
+{
+    return ((uint32_t) p[0] << 24) | ((uint32_t) p[1] << 16) |
+           ((uint32_t) p[2] << 8) | (uint32_t) p[3];
+}
+
+/*
+ * Validate a serialized histogram blob before handing it to
+ * hdr_decode_compressed, and reject it with the given SQLSTATE otherwise.
+ *
+ * HdrHistogram_c's V2 decoder allocates hdr_calloc(payload_len), where
+ * payload_len comes straight from the (untrusted) blob header, so a crafted
+ * blob could otherwise demand gigabytes of memory.  We inflate just the
+ * 40-byte encoding header and bound payload_len here, before the full decode
+ * does any large allocation.
  */
 static void
 check_histogram_blob(const uint8_t *data, size_t len, int sqlerrcode)
 {
+    uint8_t     enc_hdr[40];
+    uint32_t    compressed_len;
+    uint32_t    payload_len;
+    z_stream    strm;
+    int         ret;
     struct hdr_histogram *h = NULL;
-    int         rc;
 
-    rc = hdr_decode_compressed((uint8_t *) data, len, &h);
-    if (rc != 0)
-        ereport(ERROR,
-                (errcode(sqlerrcode),
-                 errmsg("invalid hdr_histogram blob")));
+    /* Compression flyweight: [cookie u32][length i32][zlib data ...]. */
+    if (len < 8)
+        goto bad;
+
+    /* only V2 (word-size bits masked off); V0/V1 are legacy and unsupported */
+    if ((read_be32(data) & ~0xf0u) != HDR_V2_COMPRESSION_COOKIE)
+        goto bad;
+
+    compressed_len = read_be32(data + 4);
+    if ((uint64_t) compressed_len > len - 8)
+        goto bad;
+
+    /* Inflate just the encoding header to read payload_len. */
+    memset(&strm, 0, sizeof(strm));
+    if (inflateInit(&strm) != Z_OK)
+        goto bad;
+
+    strm.next_in = (Bytef *) (data + 8);
+    strm.avail_in = (uInt) compressed_len;
+    strm.next_out = enc_hdr;
+    strm.avail_out = sizeof(enc_hdr);
+    ret = inflate(&strm, Z_SYNC_FLUSH);
+    inflateEnd(&strm);
+    if (ret != Z_OK)
+        goto bad;
+
+    /* Encoding flyweight: [cookie u32][payload_len i32][...]. */
+    payload_len = read_be32(enc_hdr + 4);
+    if (payload_len == 0 || payload_len > HDR_BLOB_MAX_COUNTS)
+        goto bad;
+
+    /* Header looks sane; let the library do the real decode. */
+    if (hdr_decode_compressed((uint8_t *) data, len, &h) != 0)
+        goto bad;
+
     hdr_close(h);
+    return;
+
+bad:
+    ereport(ERROR,
+            (errcode(sqlerrcode),
+             errmsg("invalid hdr_histogram blob")));
 }
 
 PG_FUNCTION_INFO_V1(hdr_histogram_in);

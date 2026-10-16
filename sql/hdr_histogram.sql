@@ -102,3 +102,7 @@ SET hdr_histogram.merge_mode = 'lossless';
 SELECT 'zzzz'::hdr_histogram;
 SELECT 'abc'::hdr_histogram;
 SELECT 'deadbeef'::hdr_histogram;
+
+-- A crafted blob claiming a 1 GB counts payload is rejected before the decoder
+-- can allocate it (DoS guard).
+SELECT '1c8493140000001e789c9369992cecc00007cc509a114458cf3ac560ff81012b000099ef0459'::hdr_histogram;

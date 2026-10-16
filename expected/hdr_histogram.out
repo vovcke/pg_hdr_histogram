@@ -85,3 +85,64 @@ SELECT hdr_total_count(hdr_add(1e10::float8));
 ERROR:  hdr_add: value exceeds the maximum supported value (1000000000)
 SELECT hdr_total_count(hdr_add('NaN'::float8));
 ERROR:  hdr_add: value must be finite
+-- A leading NULL is skipped without crashing.
+SELECT hdr_total_count(hdr_add(v)) AS count
+FROM (VALUES (NULL::float8), (1.0::float8), (2.0::float8)) AS t(v);
+ count 
+-------
+     2
+(1 row)
+
+-- An all-NULL aggregate is NULL.
+SELECT (SELECT hdr_add(v) FROM (VALUES (NULL::float8), (NULL::float8)) AS t(v))
+    IS NULL AS all_null_is_null;
+ all_null_is_null 
+------------------
+ t
+(1 row)
+
+-- Percentile argument validation: NaN and out-of-range are rejected.
+SELECT hdr_percentile(hdr_add(1.0::float8), 'NaN'::float8);
+ERROR:  percentile must be within [0, 100]
+SELECT hdr_percentile(hdr_add(1.0::float8), -1.0::float8);
+ERROR:  percentile must be within [0, 100]
+SELECT hdr_percentile(hdr_add(1.0::float8), 100.1::float8);
+ERROR:  percentile must be within [0, 100]
+-- Merge policy (hdr_histogram.merge_mode).  Two histograms with different
+-- ranges: A = 1..1e6 (value 100), B = 1..1e12 (value 5e11).
+SET hdr_histogram.merge_mode = 'strict';
+SELECT hdr_total_count(hdr_merge(h))
+FROM (VALUES ('1c84931400000021789c9369992cccc0c0c0cc0001309a114cf23b39d87f80081c676402004b7803d8'::hdr_histogram),
+             ('1c84931400000025789c9369992cccc0c0c0c20001cc509a11885f5c592ac060ff0122d07d979909007093065c'::hdr_histogram)) t(h);
+ERROR:  hdr_merge: histograms have different parameters
+SET hdr_histogram.merge_mode = 'lossless';
+SELECT hdr_total_count(hdr_merge(h)) AS count,
+       hdr_highest(hdr_merge(h))   AS highest
+FROM (VALUES ('1c84931400000025789c9369992cccc0c0c0c20001cc509a11885f5c592ac060ff0122d07d979909007093065c'::hdr_histogram),
+             ('1c84931400000021789c9369992cccc0c0c0cc0001309a114cf23b39d87f80081c676402004b7803d8'::hdr_histogram)) t(h);
+ count |    highest    
+-------+---------------
+     2 | 1000000000000
+(1 row)
+
+SET hdr_histogram.merge_mode = 'left';
+SELECT hdr_total_count(hdr_merge(h)) AS count,
+       hdr_highest(hdr_merge(h))   AS highest
+FROM (VALUES ('1c84931400000021789c9369992cccc0c0c0cc0001309a114cf23b39d87f80081c676402004b7803d8'::hdr_histogram),
+             ('1c84931400000025789c9369992cccc0c0c0c20001cc509a11885f5c592ac060ff0122d07d979909007093065c'::hdr_histogram)) t(h);
+ count | highest 
+-------+---------
+     1 | 1000000
+(1 row)
+
+SET hdr_histogram.merge_mode = 'union';
+SELECT hdr_total_count(hdr_merge(h)) AS count,
+       hdr_highest(hdr_merge(h))   AS highest
+FROM (VALUES ('1c84931400000021789c9369992cccc0c0c0cc0001309a114cf23b39d87f80081c676402004b7803d8'::hdr_histogram),
+             ('1c84931400000025789c9369992cccc0c0c0c20001cc509a11885f5c592ac060ff0122d07d979909007093065c'::hdr_histogram)) t(h);
+ count |    highest    
+-------+---------------
+     2 | 1000000000000
+(1 row)
+
+SET hdr_histogram.merge_mode = 'lossless';

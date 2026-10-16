@@ -1,19 +1,20 @@
 # hdr_histogram
 
-A PostgreSQL extension for **exact-latency percentiles** using HDR histograms.
+A PostgreSQL extension for **bounded-error latency percentiles** using HDR histograms.
 
 Stores a full HDR histogram (`HdrHistogram_c`) as a first-class type and gives
-you aggregates + scalar functions to build, merge and query **exact** percentiles
-(p50 / p99 / p99.9 / …) with **lossless merge** — unlike Prometheus/Datadog,
-which approximate percentiles from fixed buckets.
+you aggregates + scalar functions to build, merge and query **bounded-error**
+percentiles (p50 / p99 / p99.9 / …) with **lossless merge** — unlike
+Prometheus/Datadog, which approximate percentiles from fixed buckets.
 
 Author: Vladimir Pavliv.
 
 ## Why
 
-- **Exact, not approximate.** HDR gives ~0.1% relative precision over 6 orders of
-  magnitude. `p99.9` is a measurement, not an interpolation between buckets.
-- **Lossless merge.** Histograms merge with `hdr_add` — you can aggregate across
+- **Bounded error, not fixed buckets.** HDR gives ~0.1% relative precision over
+  6 orders of magnitude. `p99.9` is a measurement, not an interpolation between
+  buckets.
+- **Lossless merge.** Histograms merge with `hdr_merge` — you can aggregate across
   time windows, hosts, or pre-aggregated frames without losing the distribution.
 - **No lock-in.** Your data lives in ordinary Postgres, queryable with plain SQL.
 
@@ -95,6 +96,11 @@ losslessly into whatever window you want.
 - Memory: `HdrHistogram_c`'s allocator is redirected to `palloc`/`pfree`, so
   all histogram memory lives in PostgreSQL memory contexts and is reclaimed
   automatically - including on mid-query errors.
+- **Merge policy.** The `hdr_histogram.merge_mode` GUC controls what happens
+  when `hdr_merge` meets histograms with different parameters: `strict`
+  (error), `lossless` (default - merge only when lossless, else error), `left`
+  (keep the accumulator's parameters and drop non-fitting values), and `union`
+  (rebuild into the widest range / finest precision).
 
 ## Roadmap
 

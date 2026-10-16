@@ -16,7 +16,12 @@
 
 #include "fmgr.h"
 #include "libpq/pqformat.h"
+#include "utils/guc.h"
+/* varatt.h (where VARDATA/VARSIZE/SET_VARSIZE live) exists only in PG >= 16;
+ * earlier versions define those macros in postgres.h/c.h. */
+#if PG_VERSION_NUM >= 160000
 #include "varatt.h"
+#endif
 
 #include <math.h>
 #include <stdint.h>
@@ -27,6 +32,42 @@
 #include "pghdr_alloc.h"
 
 PG_MODULE_MAGIC;
+
+/*
+ * Merge policy for histograms with different parameters, controlled by the
+ * hdr_histogram.merge_mode GUC (registered in _PG_init below).
+ */
+typedef enum HdrMergeMode
+{
+    HDR_MERGE_STRICT,
+    HDR_MERGE_LOSSLESS,
+    HDR_MERGE_LEFT,
+    HDR_MERGE_UNION
+} HdrMergeMode;
+
+static int  hdr_merge_mode = HDR_MERGE_LOSSLESS;
+
+static const struct config_enum_entry hdr_merge_mode_options[] = {
+    {"strict", HDR_MERGE_STRICT, false},
+    {"lossless", HDR_MERGE_LOSSLESS, false},
+    {"left", HDR_MERGE_LEFT, false},
+    {"union", HDR_MERGE_UNION, false},
+    {NULL, 0, false}
+};
+
+void
+_PG_init(void)
+{
+    DefineCustomEnumVariable("hdr_histogram.merge_mode",
+                             "Policy for merging histograms with different parameters.",
+                             NULL,
+                             &hdr_merge_mode,
+                             HDR_MERGE_LOSSLESS,
+                             hdr_merge_mode_options,
+                             PGC_USERSET,
+                             0,
+                             NULL, NULL, NULL);
+}
 
 /*
  * hdr_encode_compressed / hdr_decode_compressed are implemented in
@@ -40,8 +81,8 @@ PG_MODULE_MAGIC;
 int hdr_encode_compressed(struct hdr_histogram *h, uint8_t **compressed_histogram, size_t *compressed_len);
 int hdr_decode_compressed(uint8_t *buffer, size_t length, struct hdr_histogram **histogram);
 
-/* Default histogram parameters for hdr_add(value): 1..1e9 with 3 sig figs,
- * i.e. ~0.1% relative precision. Covers 1 ns .. 1 s latency. */
+/* Default histogram parameters for hdr_add(value): lowest 1, highest 1e9,
+ * 3 sig figs (~0.1% relative precision); values 0..1e9 are accepted. */
 #define HDR_DEFAULT_LOWEST  1
 #define HDR_DEFAULT_HIGHEST 1000000000LL
 #define HDR_DEFAULT_SIGFIGS 3
@@ -76,13 +117,18 @@ pghdr_calloc(size_t count, size_t size)
 void *
 pghdr_realloc(void *ptr, size_t size)
 {
+    /* repalloc(NULL) is not allowed, unlike realloc(NULL). */
+    if (ptr == NULL)
+        return palloc(size);
     return repalloc(ptr, size);
 }
 
 void
 pghdr_free(void *ptr)
 {
-    pfree(ptr);
+    /* pfree(NULL) is not allowed, unlike free(NULL). */
+    if (ptr != NULL)
+        pfree(ptr);
 }
 
 /* ---------------------------------------------------------------------------
@@ -253,8 +299,10 @@ hdr_percentile(PG_FUNCTION_ARGS)
     struct hdr_histogram *h;
     int64_t     value;
 
-    if (p < 0.0 || p > 100.0)
-        elog(ERROR, "percentile must be within [0, 100], got %f", p);
+    if (isnan(p) || p < 0.0 || p > 100.0)
+        ereport(ERROR,
+                (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+                 errmsg("percentile must be within [0, 100]")));
 
     h = decode_histogram(v);
     value = hdr_value_at_percentile(h, p);
@@ -346,41 +394,142 @@ hdr_highest(PG_FUNCTION_ARGS)
 /* ---------------------------------------------------------------------------
  * Aggregate state machinery.
  *
- * The transition state is a live `struct hdr_histogram *` (malloc'd by
- * HdrHistogram_c), passed around as PostgreSQL `internal`. We keep it live so
- * we do NOT re-serialize the blob on every row - we only encode it once, in the
- * final function.
- *
- * Trade-off: HdrHistogram_c uses malloc(), not palloc(), so a mid-query error
- * leaks the in-flight states (bounded by the query). Acceptable for v1.
+ * The transition state is a live `struct hdr_histogram *`, passed around as
+ * PostgreSQL `internal`. We keep it live so we do NOT re-serialize the blob
+ * on every row - we only encode it once, in the final function.  The
+ * histogram lives in the aggregate memory context (via the palloc bridge), so
+ * it is reclaimed automatically.
  * ------------------------------------------------------------------------ */
 
+/* Get the aggregate memory context: the transition/combine/deserialize
+ * functions are invoked in the per-tuple context, but the transition state
+ * must live in the aggregate context. */
+static MemoryContext
+agg_context(FunctionCallInfo fcinfo)
+{
+    MemoryContext aggcontext;
+
+    if (AggCheckCallContext(fcinfo, &aggcontext) != AGG_CONTEXT_AGGREGATE)
+        elog(ERROR, "hdr_histogram: aggregate function called in non-aggregate context");
+    return aggcontext;
+}
+
 static struct hdr_histogram *
-agg_init_state(FunctionCallInfo fcinfo)
+agg_init_state_with(MemoryContext aggcontext, int64_t lowest, int64_t highest,
+                    int sigfigs)
 {
     struct hdr_histogram *h = NULL;
-    MemoryContext aggcontext;
     MemoryContext oldcontext;
     int         rc;
 
-    /*
-     * The transition state must live in the aggregate context, not the
-     * per-tuple context the transition function is invoked in; otherwise it
-     * is reset after the first row.  (This matters now that HdrHistogram_c's
-     * allocator is palloc rather than malloc.)
-     */
-    if (AggCheckCallContext(fcinfo, &aggcontext) != AGG_CONTEXT_AGGREGATE)
-        elog(ERROR, "hdr_histogram: aggregate function called in non-aggregate context");
-
     oldcontext = MemoryContextSwitchTo(aggcontext);
-    rc = hdr_init(HDR_DEFAULT_LOWEST, HDR_DEFAULT_HIGHEST,
-                  HDR_DEFAULT_SIGFIGS, &h);
+    rc = hdr_init(lowest, highest, sigfigs, &h);
     MemoryContextSwitchTo(oldcontext);
 
     if (rc != 0)
         elog(ERROR, "hdr_histogram: hdr_init failed");
 
     return h;
+}
+
+static struct hdr_histogram *
+agg_init_state(MemoryContext aggcontext)
+{
+    return agg_init_state_with(aggcontext, HDR_DEFAULT_LOWEST, HDR_DEFAULT_HIGHEST,
+                               HDR_DEFAULT_SIGFIGS);
+}
+
+static bool
+params_equal(const struct hdr_histogram *a, const struct hdr_histogram *b)
+{
+    return a->lowest_discernible_value == b->lowest_discernible_value &&
+           a->highest_trackable_value  == b->highest_trackable_value &&
+           a->significant_figures      == b->significant_figures;
+}
+
+/* Does a's configuration fully cover b's, so b merges into a losslessly? */
+static bool
+params_cover(const struct hdr_histogram *a, const struct hdr_histogram *b)
+{
+    return a->lowest_discernible_value <= b->lowest_discernible_value &&
+           a->highest_trackable_value  >= b->highest_trackable_value &&
+           a->significant_figures      >= b->significant_figures;
+}
+
+/*
+ * Merge a and b into a fresh histogram whose parameters are the union of both
+ * (widest range, finest precision).  The result is allocated in aggcontext;
+ * a is freed (b is freed by the caller).  Never drops values.
+ */
+static struct hdr_histogram *
+merge_union(MemoryContext aggcontext, struct hdr_histogram *a,
+            struct hdr_histogram *b)
+{
+    int64_t     lowest = Min(a->lowest_discernible_value, b->lowest_discernible_value);
+    int64_t     highest = Max(a->highest_trackable_value, b->highest_trackable_value);
+    int         sigfigs = Max(a->significant_figures, b->significant_figures);
+    struct hdr_histogram *c;
+    MemoryContext oldcontext;
+    int         rc;
+
+    /* If a already covers b, no rebuild is needed. */
+    if (params_cover(a, b))
+    {
+        hdr_add(a, b);
+        return a;
+    }
+
+    oldcontext = MemoryContextSwitchTo(aggcontext);
+    rc = hdr_init(lowest, highest, sigfigs, &c);
+    MemoryContextSwitchTo(oldcontext);
+    if (rc != 0)
+        elog(ERROR, "hdr_histogram: hdr_init failed");
+
+    /* The union range/precision covers both inputs, so nothing can drop. */
+    if (hdr_add(c, a) != 0 || hdr_add(c, b) != 0)
+        elog(ERROR, "hdr_histogram: union merge dropped values");
+
+    hdr_close(a);
+    return c;
+}
+
+/*
+ * Merge b into a according to hdr_histogram.merge_mode, returning the
+ * resulting accumulator (a fresh histogram for HDR_MERGE_UNION).  The caller
+ * owns and frees b.
+ */
+static struct hdr_histogram *
+merge_histograms(MemoryContext aggcontext, struct hdr_histogram *a,
+                 struct hdr_histogram *b)
+{
+    switch (hdr_merge_mode)
+    {
+        case HDR_MERGE_STRICT:
+            if (!params_equal(a, b))
+                ereport(ERROR,
+                        (errcode(ERRCODE_DATA_EXCEPTION),
+                         errmsg("hdr_merge: histograms have different parameters")));
+            hdr_add(a, b);
+            return a;
+
+        case HDR_MERGE_LOSSLESS:
+            if (!params_cover(a, b))
+                ereport(ERROR,
+                        (errcode(ERRCODE_DATA_EXCEPTION),
+                         errmsg("hdr_merge: cannot merge losslessly: the accumulator does not cover the incoming histogram's parameters")));
+            hdr_add(a, b);
+            return a;
+
+        case HDR_MERGE_LEFT:
+            /* keep accumulator parameters; drop incoming values that don't fit */
+            hdr_add(a, b);
+            return a;
+
+        case HDR_MERGE_UNION:
+            return merge_union(aggcontext, a, b);
+    }
+
+    pg_unreachable();
 }
 
 /* finalfunc shared by both aggregates: live histogram -> varlena. */
@@ -396,7 +545,6 @@ hdr_agg_final(PG_FUNCTION_ARGS)
 
     state = (struct hdr_histogram *) PG_GETARG_POINTER(0);
     result = encode_histogram(state);
-    hdr_close(state);
 
     PG_RETURN_POINTER(result);
 }
@@ -411,10 +559,14 @@ hdr_add_transition(PG_FUNCTION_ARGS)
     double      value;
 
     if (PG_ARGISNULL(1))
-        PG_RETURN_DATUM(PG_GETARG_DATUM(0));    /* skip NULLs */
+    {
+        if (PG_ARGISNULL(0))
+            PG_RETURN_NULL();
+        PG_RETURN_POINTER(PG_GETARG_POINTER(0));
+    }
 
     if (PG_ARGISNULL(0))
-        state = agg_init_state(fcinfo);
+        state = agg_init_state(agg_context(fcinfo));
     else
         state = (struct hdr_histogram *) PG_GETARG_POINTER(0);
 
@@ -451,18 +603,33 @@ hdr_merge_transition(PG_FUNCTION_ARGS)
     struct hdr_histogram *state;
     hdr_histogram *other_v;
     struct hdr_histogram *other;
+    MemoryContext aggcontext;
 
     if (PG_ARGISNULL(1))
-        PG_RETURN_DATUM(PG_GETARG_DATUM(0));    /* skip NULLs */
-
-    if (PG_ARGISNULL(0))
-        state = agg_init_state(fcinfo);
-    else
-        state = (struct hdr_histogram *) PG_GETARG_POINTER(0);
+    {
+        if (PG_ARGISNULL(0))
+            PG_RETURN_NULL();
+        PG_RETURN_POINTER(PG_GETARG_POINTER(0));
+    }
 
     other_v = (hdr_histogram *) PG_GETARG_VARLENA_P(1);
     other = decode_histogram(other_v);
-    hdr_add(state, other);
+
+    /*
+     * Initialize the accumulator from the first histogram's parameters; the
+     * merge policy (hdr_histogram.merge_mode) decides what happens when a
+     * later histogram has different parameters.
+     */
+    aggcontext = agg_context(fcinfo);
+    if (PG_ARGISNULL(0))
+        state = agg_init_state_with(aggcontext,
+                                    other->lowest_discernible_value,
+                                    other->highest_trackable_value,
+                                    other->significant_figures);
+    else
+        state = (struct hdr_histogram *) PG_GETARG_POINTER(0);
+
+    state = merge_histograms(aggcontext, state, other);
     hdr_close(other);
 
     PG_RETURN_POINTER(state);
@@ -477,17 +644,24 @@ hdr_merge_combine(PG_FUNCTION_ARGS)
     struct hdr_histogram *b;
 
     /*
-     * The first partial state for a group arrives with a NULL accumulator:
-     * it simply becomes the accumulator.  (The deserialized state already
-     * lives in the aggregate memory context.)
+     * Handle NULL partial states: the deserialize function returns NULL for
+     * a NULL serialized state (an all-NULL group in a worker).
      */
+    if (PG_ARGISNULL(1))
+    {
+        if (PG_ARGISNULL(0))
+            PG_RETURN_NULL();
+        PG_RETURN_POINTER(PG_GETARG_POINTER(0));
+    }
+
+    /* The first partial state for a group simply becomes the accumulator. */
     if (PG_ARGISNULL(0))
         PG_RETURN_POINTER(PG_GETARG_POINTER(1));
 
     a = (struct hdr_histogram *) PG_GETARG_POINTER(0);
     b = (struct hdr_histogram *) PG_GETARG_POINTER(1);
 
-    hdr_add(a, b);
+    a = merge_histograms(agg_context(fcinfo), a, b);
     hdr_close(b);
 
     PG_RETURN_POINTER(a);
@@ -508,18 +682,23 @@ PG_FUNCTION_INFO_V1(hdr_agg_deserialize);
 Datum
 hdr_agg_deserialize(PG_FUNCTION_ARGS)
 {
-    bytea      *v = PG_GETARG_BYTEA_P(0);
+    bytea      *v;
     struct hdr_histogram *state;
     MemoryContext aggcontext;
     MemoryContext oldcontext;
+
+    /* A NULL serialized state (all-NULL group in a worker) stays NULL. */
+    if (PG_ARGISNULL(0))
+        PG_RETURN_NULL();
+
+    v = PG_GETARG_BYTEA_P(0);
 
     /*
      * The deserialized state must be allocated in the aggregate context, not
      * the per-tuple context the deserialization function is invoked in;
      * otherwise it is reset before the combine function runs.
      */
-    if (AggCheckCallContext(fcinfo, &aggcontext) != AGG_CONTEXT_AGGREGATE)
-        elog(ERROR, "hdr_histogram: aggregate function called in non-aggregate context");
+    aggcontext = agg_context(fcinfo);
 
     oldcontext = MemoryContextSwitchTo(aggcontext);
     state = decode_histogram((hdr_histogram *) v);

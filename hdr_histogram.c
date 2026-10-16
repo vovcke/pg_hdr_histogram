@@ -87,6 +87,11 @@ int hdr_decode_compressed(uint8_t *buffer, size_t length, struct hdr_histogram *
 #define HDR_DEFAULT_HIGHEST 1000000000LL
 #define HDR_DEFAULT_SIGFIGS 3
 
+/* A serialized histogram is a few KB; reject anything absurdly large at the
+ * input boundary (also bounds the work a crafted blob can make the zlib decode
+ * do). */
+#define HDR_BLOB_MAX_SIZE   (1 * 1024 * 1024)
+
 /* The type is a varlena: [4-byte length][compressed HDR blob]. */
 typedef struct varlena hdr_histogram;
 
@@ -156,7 +161,9 @@ hex_to_bytes(const char *hex, size_t hexlen, size_t *outlen)
     char       *out;
 
     if (hexlen % 2 != 0)
-        elog(ERROR, "hdr_histogram: odd-length hex input");
+        ereport(ERROR,
+                (errcode(ERRCODE_INVALID_TEXT_REPRESENTATION),
+                 errmsg("invalid input syntax for type hdr_histogram: odd-length hex string")));
 
     out = palloc(n);
     for (size_t i = 0; i < n; i++)
@@ -165,7 +172,9 @@ hex_to_bytes(const char *hex, size_t hexlen, size_t *outlen)
         int         lo = hex_val(hex[i * 2 + 1]);
 
         if (hi < 0 || lo < 0)
-            elog(ERROR, "hdr_histogram: invalid hex input");
+            ereport(ERROR,
+                    (errcode(ERRCODE_INVALID_TEXT_REPRESENTATION),
+                     errmsg("invalid input syntax for type hdr_histogram: invalid hex digit")));
         out[i] = (char) ((hi << 4) | lo);
     }
     *outlen = n;
@@ -194,6 +203,25 @@ bytes_to_hex(const char *src, size_t len)
  * builds it).
  * ------------------------------------------------------------------------ */
 
+/*
+ * Validate that a serialized histogram blob decodes.  The input functions use
+ * this so a malformed/truncated/crafted blob is rejected with the right
+ * SQLSTATE at input time, rather than surfacing as a corrupt value later.
+ */
+static void
+check_histogram_blob(const uint8_t *data, size_t len, int sqlerrcode)
+{
+    struct hdr_histogram *h = NULL;
+    int         rc;
+
+    rc = hdr_decode_compressed((uint8_t *) data, len, &h);
+    if (rc != 0)
+        ereport(ERROR,
+                (errcode(sqlerrcode),
+                 errmsg("invalid hdr_histogram blob")));
+    hdr_close(h);
+}
+
 PG_FUNCTION_INFO_V1(hdr_histogram_in);
 Datum
 hdr_histogram_in(PG_FUNCTION_ARGS)
@@ -202,6 +230,14 @@ hdr_histogram_in(PG_FUNCTION_ARGS)
     size_t      decoded_len = 0;
     char       *decoded = hex_to_bytes(str, strlen(str), &decoded_len);
     hdr_histogram *result;
+
+    if (decoded_len > HDR_BLOB_MAX_SIZE)
+        ereport(ERROR,
+                (errcode(ERRCODE_INVALID_TEXT_REPRESENTATION),
+                 errmsg("invalid input syntax for type hdr_histogram: blob too large")));
+
+    check_histogram_blob((const uint8_t *) decoded, decoded_len,
+                         ERRCODE_INVALID_TEXT_REPRESENTATION);
 
     result = (hdr_histogram *) palloc(VARHDRSZ + decoded_len);
     SET_VARSIZE(result, VARHDRSZ + decoded_len);
@@ -227,10 +263,21 @@ hdr_histogram_recv(PG_FUNCTION_ARGS)
 {
     StringInfo  buf = (StringInfo) PG_GETARG_POINTER(0);
     int         nbytes = buf->len - buf->cursor;
-    hdr_histogram *result = (hdr_histogram *) palloc(VARHDRSZ + nbytes);
+    const char *data;
+    hdr_histogram *result;
 
+    if (nbytes > HDR_BLOB_MAX_SIZE)
+        ereport(ERROR,
+                (errcode(ERRCODE_INVALID_BINARY_REPRESENTATION),
+                 errmsg("invalid hdr_histogram blob: too large")));
+
+    data = pq_getmsgbytes(buf, nbytes);
+    check_histogram_blob((const uint8_t *) data, nbytes,
+                         ERRCODE_INVALID_BINARY_REPRESENTATION);
+
+    result = (hdr_histogram *) palloc(VARHDRSZ + nbytes);
     SET_VARSIZE(result, VARHDRSZ + nbytes);
-    memcpy(VARDATA(result), pq_getmsgbytes(buf, nbytes), nbytes);
+    memcpy(VARDATA(result), data, nbytes);
 
     PG_RETURN_POINTER(result);
 }
@@ -260,7 +307,9 @@ decode_histogram(hdr_histogram *v)
 
     rc = hdr_decode_compressed((uint8_t *) VARDATA(v), VARSIZE(v) - VARHDRSZ, &h);
     if (rc != 0)
-        elog(ERROR, "hdr_histogram: invalid compressed blob");
+        ereport(ERROR,
+                (errcode(ERRCODE_DATA_CORRUPTED),
+                 errmsg("hdr_histogram: invalid compressed blob")));
 
     return h;
 }

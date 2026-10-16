@@ -97,3 +97,8 @@ FROM (VALUES ('1c84931400000021789c9369992cccc0c0c0cc0001309a114cf23b39d87f80081
              ('1c84931400000025789c9369992cccc0c0c0c20001cc509a11885f5c592ac060ff0122d07d979909007093065c'::hdr_histogram)) t(h);
 
 SET hdr_histogram.merge_mode = 'lossless';
+
+-- Malformed input is rejected at input time.
+SELECT 'zzzz'::hdr_histogram;
+SELECT 'abc'::hdr_histogram;
+SELECT 'deadbeef'::hdr_histogram;

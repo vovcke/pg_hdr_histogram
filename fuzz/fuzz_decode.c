@@ -5,7 +5,7 @@
  * so the decode path must be memory-safe against crafted blobs.  This harness
  * mirrors the extension's input validation (check_histogram_blob in
  * hdr_histogram.c): cookie + length check, header inflate, payload_len cap,
- * and parameter sanity — then calls hdr_decode_compressed.
+ * and parameter sanity - then calls hdr_decode_compressed.
  *
  * Run (libFuzzer, clang):
  *   clang -fsanitize=fuzzer,address,undefined -O1 -g \

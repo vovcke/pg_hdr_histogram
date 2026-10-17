@@ -1,6 +1,6 @@
 # Fuzzing
 
-`fuzz_decode.c` fuzzes the histogram blob decode path — the same input
+`fuzz_decode.c` fuzzes the histogram blob decode path - the same input
 validation `hdr_histogram_in`/`hdr_histogram_recv` perform, followed by
 `hdr_decode_compressed`. The `hdr_histogram` type is `trusted = true` and parses
 arbitrary binary input, so this path must be memory-safe against crafted blobs.

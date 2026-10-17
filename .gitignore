@@ -18,6 +18,9 @@ tmp_check_iso/
 # Fuzz harness binary
 fuzz_decode
 
+# GitHub self-hosted runner
+actions-runner/
+
 # Editor / OS
 *~
 .DS_Store

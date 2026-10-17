@@ -46,7 +46,7 @@ jobs:
             zlib1g-dev
 
       - name: Build
-        run: make
+        run: make clean && make
         env:
           PG_CONFIG: /usr/lib/postgresql/${{ matrix.pg }}/bin/pg_config
 
@@ -54,7 +54,7 @@ jobs:
         run: |
           sudo make install PG_CONFIG=/usr/lib/postgresql/${{ matrix.pg }}/bin/pg_config
           sudo pg_ctlcluster ${{ matrix.pg }} main restart
-          sudo -u postgres createuser -s "$(whoami)" 2>/dev/null || true
+          sudo -u postgres createuser -p ${{ matrix.port }} -s "$(whoami)" 2>/dev/null || true
           make installcheck
         env:
           PG_CONFIG: /usr/lib/postgresql/${{ matrix.pg }}/bin/pg_config

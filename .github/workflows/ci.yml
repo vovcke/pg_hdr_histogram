@@ -10,7 +10,17 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        pg: [14, 15, 16, 17, 18]
+        include:
+          - pg: 14
+            port: 5414
+          - pg: 15
+            port: 5415
+          - pg: 16
+            port: 5416
+          - pg: 17
+            port: 5417
+          - pg: 18
+            port: 5432
 
     steps:
       - uses: actions/checkout@v4
@@ -48,3 +58,4 @@ jobs:
           make installcheck
         env:
           PG_CONFIG: /usr/lib/postgresql/${{ matrix.pg }}/bin/pg_config
+          PGPORT: ${{ matrix.port }}

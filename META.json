@@ -1,0 +1,41 @@
+{
+   "name": "hdr_histogram",
+   "abstract": "Bounded-error latency percentiles using HDR histograms",
+   "description": "Stores a serialized HdrHistogram as a first-class PostgreSQL type, with aggregates and scalar functions to build, merge and query bounded-error percentiles (p50 / p99 / p99.9) with lossless merge.",
+   "version": "1.0.0",
+   "maintainer": "Vladimir Pavliv <vpavlivv@gmail.com>",
+   "license": "mit",
+   "provides": {
+      "hdr_histogram": {
+         "file": "hdr_histogram--1.0.sql",
+         "version": "1.0",
+         "abstract": "Bounded-error latency percentiles using HDR histograms"
+      }
+   },
+   "prereqs": {
+      "runtime": {
+         "requires": {
+            "PostgreSQL": "14.0.0"
+         }
+      }
+   },
+   "resources": {
+      "repository": {
+         "url": "https://github.com/vpavliv/pg_hdr_histogram.git",
+         "web": "https://github.com/vpavliv/pg_hdr_histogram",
+         "type": "git"
+      }
+   },
+   "tags": [
+      "histogram",
+      "percentile",
+      "latency",
+      "hdr",
+      "monitoring",
+      "observability"
+   ],
+   "meta-spec": {
+      "version": "1.0.0",
+      "url": "https://pgxn.org/meta/spec.txt"
+   }
+}

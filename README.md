@@ -25,14 +25,30 @@ port of HdrHistogram by Michael Barker — see [Credits](#credits).
 
 ## Install
 
-Requires `postgresql-server-dev` (for `pg_config`) and `zlib`.
+Supports PostgreSQL 14–18 (the CI matrix). Requires the PostgreSQL server dev
+package, `zlib`, and a C compiler.
+
+### Prerequisites (Ubuntu / Debian)
+
+```bash
+# find your PostgreSQL major version first:
+pg_config --version                 # e.g. "PostgreSQL 18.6"
+
+sudo apt install postgresql-server-dev-18 build-essential zlib1g-dev
+```
+
+Use your own major version in `postgresql-server-dev-<major>` (e.g. `-16` for
+PG 16). On Red Hat-family systems the equivalents are `postgresql-server-devel`,
+`gcc`, `make` and `zlib-devel`.
+
+### Build & install
 
 ```bash
 make
 sudo make install
 ```
 
-Then in psql:
+### Enable
 
 ```sql
 CREATE EXTENSION hdr_histogram;
@@ -40,6 +56,43 @@ CREATE EXTENSION hdr_histogram;
 
 (The project is `pg_hdr_histogram`; the extension is installed as
 `hdr_histogram`.)
+
+Check that it works:
+
+```sql
+SELECT hdr_percentile(hdr_add(1.0), 50);
+-- 1
+```
+
+### Tests
+
+Regression tests (requires the extension installed and a running server):
+
+```bash
+make installcheck
+```
+
+Benchmark (size + throughput, see [Size & performance](#size--performance)):
+
+```bash
+createdb bench
+psql bench -c 'CREATE EXTENSION hdr_histogram;'
+psql bench -f bench/benchmark.sql
+```
+
+### Uninstall
+
+```sql
+DROP EXTENSION hdr_histogram;
+```
+
+To also remove the files:
+
+```bash
+sudo rm "$(pg_config --pkglibdir)/hdr_histogram.so" \
+        "$(pg_config --sharedir)/extension/hdr_histogram.control" \
+        "$(pg_config --sharedir)/extension/hdr_histogram--1.0.sql"
+```
 
 ## Usage
 

@@ -41,7 +41,7 @@ jobs:
 
       - name: Install and test
         run: |
-          sudo env "PG_CONFIG=/usr/lib/postgresql/${{ matrix.pg }}/bin/pg_config" make install
+          sudo make install PG_CONFIG=/usr/lib/postgresql/${{ matrix.pg }}/bin/pg_config
           sudo pg_ctlcluster ${{ matrix.pg }} main restart
           sudo -u postgres createuser -s "$(whoami)"
           make installcheck

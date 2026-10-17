@@ -107,6 +107,10 @@ SELECT 'deadbeef'::hdr_histogram;
 -- can allocate it (DoS guard).
 SELECT '1c8493140000001e789c9369992cecc00007cc509a114458cf3ac560ff81012b000099ef0459'::hdr_histogram;
 
+-- A crafted blob with an out-of-range histogram parameter (lowest = 2^62) is
+-- rejected before the decoder's bucket-config math can overflow.
+SELECT '1c8493140000001f789c9369992cccc0c0a0c00001cc0e5046fd7f08b0ffc040140000e9f30a51'::hdr_histogram;
+
 -- Configurable histogram parameters (hdr_histogram.lowest/highest/sig_figs).
 SET hdr_histogram.highest = 1e12;
 SELECT hdr_highest(hdr_add(2e9::float8)) AS highest,

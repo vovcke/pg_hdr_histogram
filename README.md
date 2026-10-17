@@ -244,9 +244,10 @@ how many there are** - the blob stores bucket counts, not the values:
 - **Input is validated.** `hdr_histogram_in` / `hdr_histogram_recv` decode and
   discard the blob, so malformed input is rejected up front (with the proper
   `invalid_text_representation` / `invalid_binary_representation` SQLSTATEs)
-  rather than stored as a corrupt value that fails later. The blob header is
-  also pre-checked so a crafted payload can't make the decoder allocate
-  unbounded memory.
+  rather than stored as a corrupt value that fails later. The blob header
+  (payload length and histogram parameters) is pre-checked so a crafted payload
+  can't make the decoder allocate unbounded memory or overflow its bucket-config
+  math; the decode path is also fuzzed (see `fuzz/`).
 - Memory: `HdrHistogram_c`'s allocator is redirected to `palloc`/`pfree`, so
   all histogram memory lives in PostgreSQL memory contexts and is reclaimed
   automatically - including on mid-query errors.

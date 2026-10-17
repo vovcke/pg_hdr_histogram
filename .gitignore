@@ -15,6 +15,9 @@ tmp_check_iso/
 # Release tarballs
 *.tar.gz
 
+# Fuzz harness binary
+fuzz_decode
+
 # Editor / OS
 *~
 .DS_Store

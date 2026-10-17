@@ -261,6 +261,35 @@ read_be32(const uint8_t *p)
            ((uint32_t) p[2] << 8) | (uint32_t) p[3];
 }
 
+static uint64_t
+read_be64(const uint8_t *p)
+{
+    return ((uint64_t) read_be32(p) << 32) | read_be32(p + 4);
+}
+
+/*
+ * Replicate hdr_calculate_bucket_config's validity checks without its integer
+ * overflow: the library's `lowest * 2` and `sub_bucket_mask << unit_magnitude`
+ * are UB for crafted lowest/highest values, so we pre-reject those here.
+ */
+static bool
+params_are_sane(int64_t lowest, int64_t highest, int sigfigs)
+{
+    int         sub_bucket_half_count_magnitude;
+    int         unit_magnitude;
+
+    if (lowest < 1 || sigfigs < 1 || sigfigs > 5)
+        return false;
+    if (lowest > highest / 2)   /* == lowest * 2 > highest, without overflow */
+        return false;
+
+    unit_magnitude = (int) (log((double) lowest) / log(2.0));
+    sub_bucket_half_count_magnitude =
+        (int) ceil(log(2.0 * pow(10.0, sigfigs)) / log(2.0)) - 1;
+
+    return unit_magnitude + sub_bucket_half_count_magnitude <= 61;
+}
+
 /*
  * Validate a serialized histogram blob before handing it to
  * hdr_decode_compressed, and reject it with the given SQLSTATE otherwise.
@@ -310,6 +339,13 @@ check_histogram_blob(const uint8_t *data, size_t len, int sqlerrcode)
     /* Encoding flyweight: [cookie u32][payload_len i32][...]. */
     payload_len = read_be32(enc_hdr + 4);
     if (payload_len == 0 || payload_len > HDR_BLOB_MAX_COUNTS)
+        goto bad;
+
+    /* Validate the histogram parameters before the decoder computes the bucket
+     * config, whose math overflows for crafted lowest/highest values. */
+    if (!params_are_sane((int64_t) read_be64(enc_hdr + 16),
+                         (int64_t) read_be64(enc_hdr + 24),
+                         (int) read_be32(enc_hdr + 12)))
         goto bad;
 
     /* Header looks sane; let the library do the real decode. */

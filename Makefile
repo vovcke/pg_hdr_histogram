@@ -10,10 +10,12 @@ MODULE_big = hdr_histogram
 REGRESS = hdr_histogram
 
 # Our adapter + the vendored HdrHistogram_c core (histogram + log/compression).
+# hdr_time.c is needed too: hdr_histogram_log.c references hdr_timespec_* from it.
 OBJS = hdr_histogram.o \
        third_party/HdrHistogram_c/src/hdr_histogram.o \
        third_party/HdrHistogram_c/src/hdr_histogram_log.o \
-       third_party/HdrHistogram_c/src/hdr_encoding.o
+       third_party/HdrHistogram_c/src/hdr_encoding.o \
+       third_party/HdrHistogram_c/src/hdr_time.o
 
 # <hdr/hdr_histogram.h> lives under include/; the .c files pull their sibling
 # headers ("hdr_*.h") relative to src/.

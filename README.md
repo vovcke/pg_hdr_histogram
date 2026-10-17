@@ -1,5 +1,9 @@
 # pg_hdr_histogram
 
+[![CI](https://github.com/vovcke/pg_hdr_histogram/actions/workflows/ci.yml/badge.svg)](https://github.com/vovcke/pg_hdr_histogram/actions/workflows/ci.yml)
+[![PostgreSQL 14-18](https://img.shields.io/badge/PostgreSQL-14--18-336791.svg)](https://www.postgresql.org/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
 A PostgreSQL extension for **bounded-error latency percentiles** using
 [HdrHistogram](https://github.com/HdrHistogram/HdrHistogram), the
 high-dynamic-range histogram library by Gil Tene.

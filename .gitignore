@@ -12,6 +12,9 @@ regression.out
 tmp_check/
 tmp_check_iso/
 
+# Release tarballs
+*.tar.gz
+
 # Editor / OS
 *~
 .DS_Store

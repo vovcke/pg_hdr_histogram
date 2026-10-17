@@ -1,6 +1,7 @@
 # pg_hdr_histogram
 
 [![CI](https://github.com/vovcke/pg_hdr_histogram/actions/workflows/ci.yml/badge.svg)](https://github.com/vovcke/pg_hdr_histogram/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/vovcke/pg_hdr_histogram)](https://github.com/vovcke/pg_hdr_histogram/releases)
 [![PostgreSQL 14-18](https://img.shields.io/badge/PostgreSQL-14--18-336791.svg)](https://www.postgresql.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 

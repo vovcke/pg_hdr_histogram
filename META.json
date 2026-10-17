@@ -7,8 +7,8 @@
    "license": "mit",
    "provides": {
       "hdr_histogram": {
-         "file": "hdr_histogram--1.0.sql",
-         "version": "1.0",
+         "file": "hdr_histogram--1.0.0.sql",
+         "version": "1.0.0",
          "abstract": "Bounded-error latency percentiles using HDR histograms"
       }
    },

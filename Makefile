@@ -3,7 +3,7 @@
 # Requires: postgresql-server-dev (pg_config), and zlib (for HDR compression).
 
 EXTENSION = hdr_histogram
-DATA = hdr_histogram--1.0.sql
+DATA = hdr_histogram--1.0.0.sql
 
 MODULE_big = hdr_histogram
 

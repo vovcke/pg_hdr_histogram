@@ -4,21 +4,21 @@ A PostgreSQL extension for **bounded-error latency percentiles** using
 [HdrHistogram](https://github.com/HdrHistogram/HdrHistogram), the
 high-dynamic-range histogram library by Gil Tene.
 
-It stores a **serialized** HDR histogram — a compact compressed blob, not a live
-in-memory object — as a first-class type. On disk it's a few bytes; in SQL it
+It stores a **serialized** HDR histogram - a compact compressed blob, not a live
+in-memory object - as a first-class type. On disk it's a few bytes; in SQL it
 behaves like a live histogram you can merge and query percentiles on.
 
 Author: Vladimir Pavliv.
 
 Vendors [HdrHistogram_c](https://github.com/HdrHistogram/HdrHistogram_c), the C
-port of HdrHistogram by Michael Barker — see [Credits](#credits).
+port of HdrHistogram by Michael Barker - see [Credits](#credits).
 
 ## Why HDR histogram
 
 - **Bounded error, not fixed buckets.** HDR gives ~0.1% relative precision over
   6 orders of magnitude. `p99.9` is a measurement, not an interpolation between
   buckets.
-- **Lossless merge.** Histograms merge with `hdr_merge` — aggregate across time
+- **Lossless merge.** Histograms merge with `hdr_merge` - aggregate across time
   windows, hosts, or pre-aggregated frames without losing the distribution.
 - **No lock-in.** Histograms are ordinary rows in a Postgres table, queryable
   with plain SQL.
@@ -107,14 +107,20 @@ FROM requests;
 
 `hdr_add(double precision)` records each value (converted to `int64`, so pass
 latency in a common unit like ns) into a histogram. Default range is `0 .. 1e9`
-with 3 significant figures (~0.1% precision). Values outside that range, or
-non-finite values (`NaN`, `±Inf`), raise an error.
+with 3 significant figures (~0.1% precision); tune them per session:
+
+```sql
+SET hdr_histogram.highest = 1e12;   -- track up to ~16 minutes of ns
+SET hdr_histogram.sig_figs = 4;     -- ~0.01% precision
+```
+
+Values outside the range, or non-finite values (`NaN`, `±Inf`), raise an error.
 
 ### Store & merge serialized histograms
 
 The `hdr_histogram` type holds a serialized HDR blob, so anything that produces
-an HdrHistogram — your application code, a telemetry agent, another HdrHistogram
-port — can write one straight into a column. No Postgres-specific format:
+an HdrHistogram - your application code, a telemetry agent, another HdrHistogram
+port - can write one straight into a column. No Postgres-specific format:
 
 ```sql
 CREATE TABLE rps_histograms (
@@ -130,7 +136,7 @@ FROM rps_histograms
 WHERE metric_name = 'rps' AND ts BETWEEN '14:30' AND '14:35';
 ```
 
-Any period is just a merge over a time range — per-frame histograms merge
+Any period is just a merge over a time range - per-frame histograms merge
 losslessly into whatever window you want.
 
 ### Merge policy
@@ -169,7 +175,7 @@ string:
 options='-c hdr_histogram.merge_mode=union'
 ```
 
-> The GUC is registered when the extension's shared library is loaded — on the
+> The GUC is registered when the extension's shared library is loaded - on the
 > first call to any `hdr_*` function, or after `LOAD 'hdr_histogram'`.
 > `ALTER DATABASE`/`ALTER ROLE` settings are applied at session start, *before*
 > the library loads, so they would be silently ignored. To make database/role
@@ -195,7 +201,7 @@ options='-c hdr_histogram.merge_mode=union'
 
 ## Size & performance
 
-Measured on a dev machine (PostgreSQL 18, single backend) — treat as ballpark,
+Measured on a dev machine (PostgreSQL 18, single backend) - treat as ballpark,
 your numbers will vary. Reproduce with:
 
 ```bash
@@ -205,28 +211,30 @@ psql bench -f bench/benchmark.sql
 ```
 
 **A histogram is small, and its size depends on the *spread* of values, not on
-how many there are** — the blob stores bucket counts, not the values:
+how many there are** - the blob stores bucket counts, not the values:
 
 | Data | Compressed blob size |
 |------|----------------------|
 | 1 value | ~42 B |
 | 10 M values in a tight cluster | ~48 B |
-| values spanning the full `1..1e9` range | ~3.5 KB |
+| values spanning the full `1..1e9` range (uniform) | ~3.5 KB |
+| skewed, long-tailed latency (log-uniform) | ~12 KB |
 
 **Throughput:**
 
 - `hdr_add` (build a histogram from raw values): ~9 M values/s.
-- `hdr_merge` (merge stored histograms), per tiny histogram:
-  - single-threaded: ~90 µs (~11 k/s);
-  - parallel (2 workers + leader): ~28 µs (~35 k/s) — roughly **3× faster**.
-  The cost scales with blob size — each merge decompresses and recompresses.
+- `hdr_merge` (merge stored histograms):
+  - tiny (1-value) frames: ~90 µs single-threaded;
+  - realistic (~1000-value) frames: ~110 µs;
+  - parallel (2 workers + leader): roughly **3× faster**.
+  The cost scales with blob size - each merge decompresses and recompresses.
 
 ## Design notes
 
 - **Type** `hdr_histogram` is a varlena holding the compressed HDR blob
   (`hdr_encode_compressed`).
 - **Aggregates** keep a live `struct hdr_histogram *` as their transition state
-  (`internal`), so the blob is serialized only once, in the final function — not
+  (`internal`), so the blob is serialized only once, in the final function - not
   on every row.
 - **Parallel-safe.** Both aggregates provide `COMBINEFUNC` + `SERIALFUNC` /
   `DESERIALFUNC`, so PostgreSQL can parallelize `GROUP BY` across workers and
@@ -248,13 +256,13 @@ how many there are** — the blob stores bucket counts, not the values:
 Percentiles from mergeable sketches are a well-trodden problem; other PostgreSQL
 extensions solve it with different algorithms:
 
-- [`tdigest`](https://github.com/tvondra/tdigest) — t-digest. Accurate on skewed
+- [`tdigest`](https://github.com/tvondra/tdigest) - t-digest. Accurate on skewed
   distributions, but with no fixed relative-error guarantee, and merges are
   approximate.
-- [`ddsketch`](https://github.com/tvondra/ddsketch) — DDSketch (Datadog's
+- [`ddsketch`](https://github.com/tvondra/ddsketch) - DDSketch (Datadog's
   sketch), a log-bucketed sketch with a relative-error guarantee. Conceptually
   the closest to HDR, but a different format and API.
-- [`query_histogram`](https://github.com/tvondra/query_histogram) — histograms
+- [`query_histogram`](https://github.com/tvondra/query_histogram) - histograms
   of query *durations* for monitoring, not a general-purpose histogram type.
 
 `hdr_histogram` differs by storing a full HDR histogram as a first-class type,
@@ -265,7 +273,7 @@ hosts, rather than only estimated in memory.
 
 The histogram implementation is entirely
 [HdrHistogram_c](https://github.com/HdrHistogram/HdrHistogram_c) (vendored under
-`third_party/`, version 0.11.10) — the C port, primarily by Michael Barker, of
+`third_party/`, version 0.11.10) - the C port, primarily by Michael Barker, of
 Gil Tene's [HdrHistogram](https://github.com/HdrHistogram/HdrHistogram).  The
 algorithm and its implementation are their work; this extension is a thin
 adapter that packages it as a PostgreSQL type, aggregates and functions.  The

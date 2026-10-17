@@ -34,6 +34,12 @@
 
 PG_MODULE_MAGIC;
 
+/* Default histogram parameters for hdr_add(value) (also the GUC defaults):
+ * lowest 1, highest 1e9, 3 sig figs (~0.1% relative precision). */
+#define HDR_DEFAULT_LOWEST  1
+#define HDR_DEFAULT_HIGHEST 1000000000
+#define HDR_DEFAULT_SIGFIGS 3
+
 /*
  * Merge policy for histograms with different parameters, controlled by the
  * hdr_histogram.merge_mode GUC (registered in _PG_init below).
@@ -46,7 +52,12 @@ typedef enum HdrMergeMode
     HDR_MERGE_UNION
 } HdrMergeMode;
 
-static int  hdr_merge_mode = HDR_MERGE_LOSSLESS;
+static int hdr_merge_mode = HDR_MERGE_LOSSLESS;
+
+/* Histogram parameters for hdr_add(value), settable per session. */
+static double hdr_cfg_lowest = HDR_DEFAULT_LOWEST;
+static double hdr_cfg_highest = HDR_DEFAULT_HIGHEST;
+static int hdr_cfg_sig_figs = HDR_DEFAULT_SIGFIGS;
 
 static const struct config_enum_entry hdr_merge_mode_options[] = {
     {"strict", HDR_MERGE_STRICT, false},
@@ -59,6 +70,36 @@ static const struct config_enum_entry hdr_merge_mode_options[] = {
 void
 _PG_init(void)
 {
+    DefineCustomRealVariable("hdr_histogram.lowest",
+                             "Lowest discernible value used by hdr_add.",
+                             NULL,
+                             &hdr_cfg_lowest,
+                             HDR_DEFAULT_LOWEST,
+                             1.0, 1e18,
+                             PGC_USERSET,
+                             0,
+                             NULL, NULL, NULL);
+
+    DefineCustomRealVariable("hdr_histogram.highest",
+                             "Highest trackable value used by hdr_add.",
+                             NULL,
+                             &hdr_cfg_highest,
+                             HDR_DEFAULT_HIGHEST,
+                             2.0, 1e18,
+                             PGC_USERSET,
+                             0,
+                             NULL, NULL, NULL);
+
+    DefineCustomIntVariable("hdr_histogram.sig_figs",
+                            "Significant figures used by hdr_add (1..5).",
+                            NULL,
+                            &hdr_cfg_sig_figs,
+                            HDR_DEFAULT_SIGFIGS,
+                            1, 5,
+                            PGC_USERSET,
+                            0,
+                            NULL, NULL, NULL);
+
     DefineCustomEnumVariable("hdr_histogram.merge_mode",
                              "Policy for merging histograms with different parameters.",
                              NULL,
@@ -73,20 +114,13 @@ _PG_init(void)
 /*
  * hdr_encode_compressed / hdr_decode_compressed are implemented in
  * third_party/HdrHistogram_c/src/hdr_histogram_log.c but are NOT declared in
- * the public header (they live in the test header). Declare them here, same as
- * the nanolens core does in HdrCompressed.hpp.
+ * the public header (they live in the test header). Declare them here.
  *
- * encode: allocates *compressed_histogram (caller free()s).
+ * encode: allocates *compressed_histogram (caller frees).
  * decode: allocates *histogram (caller hdr_close()s).
  */
 int hdr_encode_compressed(struct hdr_histogram *h, uint8_t **compressed_histogram, size_t *compressed_len);
 int hdr_decode_compressed(uint8_t *buffer, size_t length, struct hdr_histogram **histogram);
-
-/* Default histogram parameters for hdr_add(value): lowest 1, highest 1e9,
- * 3 sig figs (~0.1% relative precision); values 0..1e9 are accepted. */
-#define HDR_DEFAULT_LOWEST  1
-#define HDR_DEFAULT_HIGHEST 1000000000LL
-#define HDR_DEFAULT_SIGFIGS 3
 
 /* A serialized histogram is a few KB; reject anything absurdly large at the
  * input boundary (also bounds the work a crafted blob can make the zlib decode
@@ -545,7 +579,10 @@ agg_init_state_with(MemoryContext aggcontext, int64_t lowest, int64_t highest,
     MemoryContextSwitchTo(oldcontext);
 
     if (rc != 0)
-        elog(ERROR, "hdr_histogram: hdr_init failed");
+        ereport(ERROR,
+                (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+                 errmsg("hdr_histogram: invalid histogram parameters (lowest=%lld, highest=%lld, sig_figs=%d)",
+                        (long long) lowest, (long long) highest, sigfigs)));
 
     return h;
 }
@@ -553,8 +590,8 @@ agg_init_state_with(MemoryContext aggcontext, int64_t lowest, int64_t highest,
 static struct hdr_histogram *
 agg_init_state(MemoryContext aggcontext)
 {
-    return agg_init_state_with(aggcontext, HDR_DEFAULT_LOWEST, HDR_DEFAULT_HIGHEST,
-                               HDR_DEFAULT_SIGFIGS);
+    return agg_init_state_with(aggcontext, (int64_t) hdr_cfg_lowest,
+                               (int64_t) hdr_cfg_highest, hdr_cfg_sig_figs);
 }
 
 static bool

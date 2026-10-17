@@ -126,8 +126,7 @@ CREATE AGGREGATE hdr_add(double precision) (
     PARALLEL     = SAFE
 );
 
--- Aggregate: losslessly merge stored histograms (e.g. per-frame blobs written
--- by nanolens).
+-- Aggregate: losslessly merge stored histograms (e.g. per-frame blobs).
 --
 --     SELECT hdr_percentile(hdr_merge(hist), 99.9)
 --     FROM rps_histograms WHERE ts BETWEEN '14:30' AND '14:35';

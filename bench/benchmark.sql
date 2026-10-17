@@ -20,10 +20,22 @@ SELECT 'full 1..1e9 range' AS case,
 FROM (SELECT ((g::bigint * 1103515245 + 12345) % 1000000000)::float8 AS v
       FROM generate_series(1, 1000000) g) t;
 
-\echo === Build throughput (hdr_add), 10M values ===
+SELECT 'skewed (long-tailed) latency' AS case,
+       octet_length(hdr_histogram_send(hdr_add(v))) AS bytes
+FROM (SELECT round(exp((((g::bigint * 1103515245 + 12345) % 1000000000)::float8 / 1000000000.0) * ln(1000000000.0)))::float8 AS v
+      FROM generate_series(1, 1000000) g) t;
+
+\echo === Build throughput (hdr_add), 10M uniform values ===
 \timing on
 SELECT hdr_total_count(hdr_add(v))
 FROM (SELECT ((g::bigint * 1103515245 + 12345) % 1000000000)::float8 AS v
+      FROM generate_series(1, 10000000) g) t;
+\timing off
+
+\echo === Build throughput (hdr_add), 10M skewed values ===
+\timing on
+SELECT hdr_total_count(hdr_add(v))
+FROM (SELECT round(exp((((g::bigint * 1103515245 + 12345) % 1000000000)::float8 / 1000000000.0) * ln(1000000000.0)))::float8 AS v
       FROM generate_series(1, 10000000) g) t;
 \timing off
 
@@ -54,3 +66,17 @@ SELECT hdr_total_count(hdr_merge(h)) FROM bench_frames_big;
 \timing off
 
 DROP TABLE bench_frames_big;
+
+\echo === Merge throughput (hdr_merge), 10k frames x 1000 values (realistic) ===
+DROP TABLE IF EXISTS bench_frames_real;
+CREATE TABLE bench_frames_real AS
+SELECT g / 1000 AS id,
+       hdr_add(round(exp((((g::bigint * 1103515245 + 12345) % 1000000000)::float8 / 1000000000.0) * ln(1000000000.0)))::float8) AS h
+FROM generate_series(1, 10000000) g
+GROUP BY g / 1000;
+
+\timing on
+SELECT hdr_total_count(hdr_merge(h)) FROM bench_frames_real;
+\timing off
+
+DROP TABLE bench_frames_real;

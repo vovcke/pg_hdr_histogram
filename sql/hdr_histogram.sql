@@ -106,3 +106,16 @@ SELECT 'deadbeef'::hdr_histogram;
 -- A crafted blob claiming a 1 GB counts payload is rejected before the decoder
 -- can allocate it (DoS guard).
 SELECT '1c8493140000001e789c9369992cecc00007cc509a114458cf3ac560ff81012b000099ef0459'::hdr_histogram;
+
+-- Configurable histogram parameters (hdr_histogram.lowest/highest/sig_figs).
+SET hdr_histogram.highest = 1e12;
+SELECT hdr_highest(hdr_add(2e9::float8)) AS highest,
+       hdr_max(hdr_add(2e9::float8))    AS max;
+
+-- An invalid combination (lowest * 2 > highest) is rejected.
+SET hdr_histogram.lowest = 1000;
+SET hdr_histogram.highest = 1000;
+SELECT hdr_total_count(hdr_add(1.0::float8));
+
+RESET hdr_histogram.lowest;
+RESET hdr_histogram.highest;

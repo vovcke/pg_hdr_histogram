@@ -165,3 +165,19 @@ SELECT '1c8493140000001e789c9369992cecc00007cc509a114458cf3ac560ff81012b000099ef
 ERROR:  invalid hdr_histogram blob
 LINE 1: SELECT '1c8493140000001e789c9369992cecc00007cc509a114458cf3a...
                ^
+-- Configurable histogram parameters (hdr_histogram.lowest/highest/sig_figs).
+SET hdr_histogram.highest = 1e12;
+SELECT hdr_highest(hdr_add(2e9::float8)) AS highest,
+       hdr_max(hdr_add(2e9::float8))    AS max;
+    highest    |    max     
+---------------+------------
+ 1000000000000 | 2000683007
+(1 row)
+
+-- An invalid combination (lowest * 2 > highest) is rejected.
+SET hdr_histogram.lowest = 1000;
+SET hdr_histogram.highest = 1000;
+SELECT hdr_total_count(hdr_add(1.0::float8));
+ERROR:  hdr_histogram: invalid histogram parameters (lowest=1000, highest=1000, sig_figs=3)
+RESET hdr_histogram.lowest;
+RESET hdr_histogram.highest;

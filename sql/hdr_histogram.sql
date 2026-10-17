@@ -119,3 +119,15 @@ SELECT hdr_total_count(hdr_add(1.0::float8));
 
 RESET hdr_histogram.lowest;
 RESET hdr_histogram.highest;
+
+-- Boundary values.
+SELECT hdr_total_count(hdr_add(0.0::float8));          -- 0 is accepted
+SELECT hdr_total_count(hdr_add(1e9::float8));          -- exactly the max, accepted
+SELECT hdr_total_count(hdr_add(1e9::float8 + 1));      -- just over, rejected
+SELECT hdr_total_count(hdr_add('Infinity'::float8));   -- rejected
+SELECT hdr_total_count(hdr_add('-Infinity'::float8));  -- rejected
+
+-- Window-function usage: the final function must be safe to call repeatedly.
+SELECT g, hdr_total_count(hdr_add(v) OVER (ORDER BY g))
+FROM (VALUES (1, 1.0::float8), (2, 10.0::float8), (3, 100.0::float8)) AS t(g, v)
+ORDER BY g;

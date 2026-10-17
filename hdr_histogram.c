@@ -561,7 +561,8 @@ agg_context(FunctionCallInfo fcinfo)
 {
     MemoryContext aggcontext;
 
-    if (AggCheckCallContext(fcinfo, &aggcontext) != AGG_CONTEXT_AGGREGATE)
+    /* accept both regular (AGG_CONTEXT_AGGREGATE) and window (AGG_CONTEXT_WINDOW) */
+    if (AggCheckCallContext(fcinfo, &aggcontext) == 0)
         elog(ERROR, "hdr_histogram: aggregate function called in non-aggregate context");
     return aggcontext;
 }

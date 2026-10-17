@@ -181,3 +181,33 @@ SELECT hdr_total_count(hdr_add(1.0::float8));
 ERROR:  hdr_histogram: invalid histogram parameters (lowest=1000, highest=1000, sig_figs=3)
 RESET hdr_histogram.lowest;
 RESET hdr_histogram.highest;
+-- Boundary values.
+SELECT hdr_total_count(hdr_add(0.0::float8));          -- 0 is accepted
+ hdr_total_count 
+-----------------
+               1
+(1 row)
+
+SELECT hdr_total_count(hdr_add(1e9::float8));          -- exactly the max, accepted
+ hdr_total_count 
+-----------------
+               1
+(1 row)
+
+SELECT hdr_total_count(hdr_add(1e9::float8 + 1));      -- just over, rejected
+ERROR:  hdr_add: value exceeds the maximum supported value (1000000000)
+SELECT hdr_total_count(hdr_add('Infinity'::float8));   -- rejected
+ERROR:  hdr_add: value must be finite
+SELECT hdr_total_count(hdr_add('-Infinity'::float8));  -- rejected
+ERROR:  hdr_add: value must be finite
+-- Window-function usage: the final function must be safe to call repeatedly.
+SELECT g, hdr_total_count(hdr_add(v) OVER (ORDER BY g))
+FROM (VALUES (1, 1.0::float8), (2, 10.0::float8), (3, 100.0::float8)) AS t(g, v)
+ORDER BY g;
+ g | hdr_total_count 
+---+-----------------
+ 1 |               1
+ 2 |               2
+ 3 |               3
+(3 rows)
+

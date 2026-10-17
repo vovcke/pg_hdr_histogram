@@ -21,8 +21,8 @@
    },
    "resources": {
       "repository": {
-         "url": "https://github.com/vpavliv/pg_hdr_histogram.git",
-         "web": "https://github.com/vpavliv/pg_hdr_histogram",
+         "url": "https://github.com/vovcke/pg_hdr_histogram.git",
+         "web": "https://github.com/vovcke/pg_hdr_histogram",
          "type": "git"
       }
    },
